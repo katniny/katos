@@ -1,0 +1,3 @@
+@echo off
+echo Running KatOS in QEMU...
+qemu-system-i386 -drive format=raw,file=build\katos.img
