@@ -1,53 +1,45 @@
+; second stage bootloader for KatOS
 BITS 16
-ORG 0x7C00
+ORG 0x7E00 ; we are loaded right after the first stage
 
-; main bootloader entry point
-boot_start:
-    ; set up the stack
-    cli ; disable interrupts
-    mov ax, 0x0000 ; set segments to 0
-    mov ds, ax 
-    mov es, ax 
-    mov ss, ax 
-    mov sp, 0x7C00 ; set up stack pointer right below where we're loaded
-    sti ; enable interrupts
-
+; entry point for second stage
+stage2_start:
     ; print welcome message
-    mov si, welcome_msg
-    call print_string 
+    mov si, stage2_msg
+    call print_string
 
     ; check if A20 line is enabled
     call check_a20
     jnc .a20_enabled ; if carry flag is clear, A20 is already enabled
-
+    
     ; enable A20 line
     mov si, enable_a20_msg
-    call print_string 
-    call enable_a20 
-
+    call print_string
+    call enable_a20
+    
 .a20_enabled:
     ; load the kernel from disk
-    mov si, loading_msg
-    call print_string 
+    mov si, loading_kernel_msg
+    call print_string
     call load_kernel
-
-    ; prepare to switch to protected mode (32-bit)
+    
+    ; prepare to switch to protected mode
     mov si, protected_mode_msg
-    call print_string 
+    call print_string
     call switch_to_protected_mode
-
+    
     ; we should never get here
     mov si, fail_msg
-    call print_string 
+    call print_string
     jmp $ ; infinite loop
 
 ; function to print a null-terminated string
 ; input: SI points to string
 print_string:
-    push ax 
-    push bx 
+    push ax
+    push bx
     mov ah, 0x0E ; BIOS teletype function
-    mov bx, 0x0007 ; page 0, text attribute
+    mov bx, 0x0007 ; Page 0, text attribute
 .loop:
     lodsb ; load byte from SI into AL and increment SI
     test al, al ; check if character is null
@@ -65,18 +57,18 @@ load_kernel:
     mov ah, 0x00
     mov dl, 0x80 ; first hard drive
     int 0x13
-    jc .error 
+    jc .error
 
     ; load the kernel
     mov ah, 0x02 ; BIOS read sector function
-    mov al, 32 ; number of sectors to read (16KB should be enough for now)
+    mov al, 32 ; number of sectors to read (16KB should be enough for initial kernel)
     mov ch, 0 ; cylinder 0
-    mov cl, 2 ; start from sector 2 (1-based, sector 1 is the boot sector)
+    mov cl, 10 ; start from sector 10 (after bootloader stages)
     mov dh, 0 ; head 0
     mov dl, 0x80 ; drive number (0x80 for first hard disk)
-    mov bx, 0 ; ES:BX = 0x1000:0x0000 = physical address 0x10000
-    mov es, bx              
-    mov bx, 0               
+    mov bx, 0x1000  ; set ES to 0x1000
+    mov es, bx ; ES:BX = 0x1000:0x0000 = physical address 0x10000
+    xor bx, bx ; set BX to 0      
     int 0x13 ; call BIOS disk interrupt
     jc .error ; if carry flag set, there was an error
     
@@ -86,7 +78,7 @@ load_kernel:
 
 .error:
     mov si, disk_error_msg
-    call print_string 
+    call print_string
     mov ah, 0x0E
     mov al, '0'
     add al, ah ; convert error code to ASCII digit
@@ -94,83 +86,82 @@ load_kernel:
     jmp $ ; hang
 
 ; check if A20 line is enabled
-; returns: carry flag clear is A20 is enabled, set if disabled
+; returns: Carry flag clear if A20 is enabled, set if disabled
 check_a20:
-    pushf 
+    pushf
     push ds
-    push es 
-    push di 
-    push si 
-
+    push es
+    push di
+    push si
+ 
     cli ; disable interrupts
-
+ 
     xor ax, ax ; set ES:DI to 0000:0500
-    mov es, ax 
+    mov es, ax
     mov di, 0x0500
-
+ 
     mov ax, 0xFFFF ; set DS:SI to FFFF:0510
-    mov ds, ax 
+    mov ds, ax
     mov si, 0x0510
-
+ 
     mov al, byte [es:di] ; save original bytes
-    push ax 
+    push ax
     mov al, byte [ds:si]
-    push ax 
-
+    push ax
+ 
     mov byte [es:di], 0x00 ; write different values to memory
     mov byte [ds:si], 0xFF
-
+ 
     cmp byte [es:di], 0xFF ; compare values - if A20 is enabled, they should be different
-
+ 
     pop ax ; restore original values
-    mov byte [ds:si], al 
-    pop ax 
-    mov byte [es:di], al 
-
-    mov ax, 0 ; clear ax
+    mov byte [ds:si], al
+    pop ax
+    mov byte [es:di], al
+ 
+    mov ax, 0 ; clear AX
     je .done ; jump if equal (A20 is disabled)
-
+    
     stc ; set carry flag if A20 is disabled
-    jmp .exit 
-
+    jmp .exit
+    
 .done:
-    clc
-
+    clc ; clear carry flag if A20 is enabled
+    
 .exit:
-    pop si 
-    pop di 
-    pop es 
-    pop ds 
-    popf 
-    ret 
+    pop si
+    pop di
+    pop es
+    pop ds
+    popf
+    ret
 
 ; enable A20 line using BIOS
 enable_a20:
     mov ax, 0x2401
     int 0x15 ; call BIOS interrupt
     jc .error ; if carry flag is set, there was an error
-    ret 
-
+    ret
+    
 .error:
     mov si, a20_error_msg
-    call print_string 
+    call print_string
     jmp $ ; hang
 
-; GDT (Global Descriptor Table (for 32-bit Protected Mode and 64-bit Long Mode))
-; this is for 64-bit long mode, as KatOS is a 64-bit Operating System
+; GDT (Global Descriptor Table)
 gdt_start:
     ; null descriptor
     dq 0x0000000000000000
-
+    
     ; code segment descriptor (64-bit)
     dw 0xFFFF ; limit (bits 0-15)
     dw 0x0000 ; base (bits 0-15)
-    dw 0x00 ; base (bits 16-23)
+    db 0x00 ; base (bits 16-23)
     db 10011010b ; access byte: Present, Ring 0, Code Segment, Executable, Direction 0, Readable
     db 10101111b ; flags: Granularity, 32-bit protected mode, 64-bit code segment + Limit (bits 16-19)
     db 0x00 ; base (bits 24-31)
-
-    ; data segment descriptor (64-bit commpatible)
+    
+    ; data segment descriptor (64-bit compatible)
     dw 0xFFFF ; limit (bits 0-15)
     dw 0x0000 ; base (bits 0-15)
     db 0x00 ; base (bits 16-23)
@@ -186,100 +177,104 @@ gdt_descriptor:
 CODE_SEG equ 0x08 ; offset in GDT for code segment (2nd entry, 8 bytes in)
 DATA_SEG equ 0x10 ; offset in GDT for data segment (3rd entry, 16 bytes in)
 
-; function to switch to 32-bit protected mode
+; function to switch to protected mode
 switch_to_protected_mode:
     cli ; disable interrupts
-    lgdt [gdt_descriptor] ; load gdt register with our descriptor
-
+    lgdt [gdt_descriptor] ; load GDT register with our descriptor
+    
     ; set PE (Protection Enable) bit in CR0
-    mov eax, cr0 
+    mov eax, cr0
     or eax, 1 ; set bit 0
-    mov cr0, eax 
-
+    mov cr0, eax
+    
     ; perform far jump to 32-bit code
     jmp CODE_SEG:protected_mode_entry
 
 ; 32-bit code starts here
-BITS 32 
+BITS 32
 protected_mode_entry:
     ; set up segment registers for protected mode
     mov ax, DATA_SEG ; update segment registers
-    mov ds, ax 
-    mov es, ax 
-    mov fs, ax 
-    mov gs, ax 
-    mov ss, ax 
-
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    
     ; set up a new stack
     mov esp, 0x90000 ; set stack pointer
-
+    
     ; set up page tables for long mode
     call setup_paging
-
+    
     ; switch to long mode
     call switch_to_long_mode
-
+    
     ; we should never get here
-    hlt 
+    hlt
 
 ; set up paging for long mode
 setup_paging:
     ; clear page tables area
     mov edi, 0x1000 ; page tables will start at 0x1000
     mov cr3, edi ; set CR3 to point to PML4
-    xor eax, eax 
+    xor eax, eax
     mov ecx, 4096 ; clear 4 pages (16KB total)
     rep stosd ; repeat store doubleword
     mov edi, cr3 ; reset EDI to start of PML4
-
+    
     ; set up page tables (identity mapping)
     ; PML4 entry (first entry points to PDPT)
-    mov dword [edi], 0x3003 ; present + write + user
-    add edi, 0x1000 ; next page (PDT)
-
+    mov dword [edi], 0x2003 ; Present + Write + User
+    add edi, 0x1000 ; Next page (PDPT)
+    
+    ; PDPT entry (first entry points to PDT)
+    mov dword [edi], 0x3003 ; Present + Write + User
+    add edi, 0x1000 ; Next page (PDT)
+    
     ; PDT entry (first entry points to PT)
-    mov dword [edi], 0x4003 ; present + write + user
-    add edi, 0x1000 ; next page (PT)
-
-    ; identity map first 2MB of memory
-    mov ebx, 0x00000003 ; present + write + user
+    mov dword [edi], 0x4003 ; Present + Write + User
+    add edi, 0x1000         ; Next page (PT)
+    
+    ; Identity map first 2MB of memory
+    mov ebx, 0x00000003 ; Present + Write + User
     mov ecx, 512 ; 512 entries in PT (2MB of memory)
-
+    
 .set_entry:
     mov dword [edi], ebx ; store entry
     add ebx, 0x1000 ; next physical address (4KB)
     add edi, 8 ; next entry (8 bytes per entry)
     loop .set_entry ; repeat for all entries
+    
+    ret
 
-    ret 
-
-; switch to 64-bit long mode (KatOS target!)
+; switch to long mode
 switch_to_long_mode:
     ; enable PAE
-    mov eax, cr4 
+    mov eax, cr4
     or eax, 1 << 5 ; set PAE bit
-    mov cr4, eax 
-
+    mov cr4, eax
+    
     ; enable long mode in EFER MSR
     mov ecx, 0xC0000080 ; EFER MSR
-    rdmsr 
+    rdmsr
     or eax, 1 << 8 ; set LME bit
-    wrmsr 
-
+    wrmsr
+    
     ; enable paging (this activates long mode)
-    mov eax, cr0 
+    mov eax, cr0
     or eax, 1 << 31 ; set PG bit
-    mov cr0, eax 
-
+    mov cr0, eax
+    
     ; load 64-bit GDT and jump to 64-bit code
     lgdt [gdt64_ptr]
-    jmp CODE_SEG:long_mode_entry 
+    jmp CODE_SEG:long_mode_entry
 
 ; GDT for 64-bit mode
 gdt64_start:
     ; null descriptor
     dq 0x0000000000000000
-
+    
     ; code segment descriptor (64-bit)
     dw 0x0000 ; limit (bits 0-15) - ignored in 64-bit mode
     dw 0x0000 ; base (bits 0-15) - ignored in 64-bit mode
@@ -292,6 +287,7 @@ gdt64_start:
     dw 0x0000 ; limit (bits 0-15) - ignored in 64-bit mode
     dw 0x0000 ; base (bits 0-15) - ignored in 64-bit mode
     db 0x00 ; base (bits 16-23) - ignored in 64-bit mode
+    db 10010010b ; access byte
     db 10010010b ; access byte: Present, Ring 0, Data Segment, Direction 0, Writable
     db 00000000b ; flags: All 0 for data segments in 64-bit mode
     db 0x00 ; base (bits 24-31) - ignored in 64-bit mode
@@ -305,19 +301,19 @@ gdt64_ptr:
 BITS 64
 long_mode_entry:
     ; update segment registers
-    mov ax, DATA_SEG 
-    mov ds, ax 
-    mov es, ax 
-    mov fs, ax 
-    mov gs, ax 
-    mov ss, ax 
-
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    
     ; clear screen using direct video memory access
     mov rdi, 0xB8000 ; video memory address
     mov rcx, 2000 ; 80x25 characters on screen (each 2 bytes)
     mov rax, 0x1F201F201F201F20 ; space character (0x20) with light gray color (0x1F)
     rep stosq ; fill screen
-
+    
     ; display a message on screen
     mov rdi, 0xB8000
     mov rax, 0x1F4B1F611F741F4F ; "KatO" with light gray color
@@ -332,23 +328,19 @@ long_mode_entry:
     mov [rdi + 32], rax
     mov rax, 0x1F651F641F6F1F64 ; "de!" with light gray color 
     mov [rdi + 40], rax
-
+    
     ; jump to kernel code at 0x10000
     mov rax, 0x10000 ; address where we loaded the kernel
-    jmp rax 
-
+    jmp rax
+    
     ; we should never get here
-    hlt 
+    hlt
 
 ; data section
-welcome_msg db "Welcome to KatOS Bootloader!", 13, 10, 0
+stage2_msg db "KatOS Bootloader Stage 2", 13, 10, 0
 enable_a20_msg db "Enabling A20 line...", 13, 10, 0
-loading_msg db "Loading kernel...", 13, 10, 0
+loading_kernel_msg db "Loading kernel...", 13, 10, 0
 protected_mode_msg db "Switching to protected mode...", 13, 10, 0
 fail_msg db "Failed to execute! System halted.", 13, 10, 0
 disk_error_msg db "Error loading kernel! Code: ", 0
 a20_error_msg db "Error enabling A20 line!", 13, 10, 0
-
-; boot signature
-times 510-($-$$) db 0 ; pad the rest of the sector with zeros
-dw 0xAA55 ; boot signature
