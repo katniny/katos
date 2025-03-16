@@ -218,5 +218,9 @@ void kernel_main() {
 // we need to define the entry point for the linker
 // this is the function expected by the bootloader at 0x10000
 void _start() {
+    uint8_t error_color = vga_color(VGA_COLOR_LIGHT_GRAY, VGA_COLOR_BLACK);
+    clear_screen();
+    print_string("KERNEL ERROR: If you see this, kernel is loaded but failing\n\r", error_color);
+
     kernel_main();
 }

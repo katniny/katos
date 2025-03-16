@@ -22,8 +22,15 @@ stage2_start:
     mov si, loading_kernel_msg
     call print_string
     call load_kernel
+
+    ; check if kernel loaded correctly
+    mov ax, 0x1000
+    mov es, ax 
+    mov eax, [es:0] ; read first dword of kernel
+    cmp eax, 0 ; if its 0, kernel might not be loaded
+    je .kernel_error
     
-    ; prepare to switch to protected mode
+    ; if kernel seems to be present, prepare to switch to protected mode
     mov si, protected_mode_msg
     call print_string
     call switch_to_protected_mode
@@ -32,6 +39,10 @@ stage2_start:
     mov si, fail_msg
     call print_string
     jmp $ ; infinite loop
+.kernel_error:
+    mov si, kernel_error_msg
+    call print_string 
+    jmp $ ; hang
 
 ; function to print a null-terminated string
 ; input: SI points to string
@@ -61,9 +72,9 @@ load_kernel:
 
     ; load the kernel
     mov ah, 0x02 ; BIOS read sector function
-    mov al, 32 ; number of sectors to read (16KB should be enough for initial kernel)
+    mov al, 64 ; number of sectors to read (16KB should be enough for initial kernel)
     mov ch, 0 ; cylinder 0
-    mov cl, 10 ; start from sector 10 (after bootloader stages)
+    mov cl, 3 ; start from sector 10 (after bootloader stages)
     mov dh, 0 ; head 0
     mov dl, 0x80 ; drive number (0x80 for first hard disk)
     mov bx, 0x1000  ; set ES to 0x1000
@@ -216,7 +227,7 @@ protected_mode_entry:
 ; set up paging for long mode
 setup_paging:
     ; clear page tables area
-    mov edi, 0x1000 ; page tables will start at 0x1000
+    mov edi, 0x9000 ; page tables will start at 0x1000
     mov cr3, edi ; set CR3 to point to PML4
     xor eax, eax
     mov ecx, 4096 ; clear 4 pages (16KB total)
@@ -225,15 +236,15 @@ setup_paging:
     
     ; set up page tables (identity mapping)
     ; PML4 entry (first entry points to PDPT)
-    mov dword [edi], 0x2003 ; Present + Write + User
+    mov dword [edi], 0x9003 + 0x1000 ; Present + Write + User
     add edi, 0x1000 ; Next page (PDPT)
     
     ; PDPT entry (first entry points to PDT)
-    mov dword [edi], 0x3003 ; Present + Write + User
+    mov dword [edi], 0x9003 + 0x2000 ; Present + Write + User
     add edi, 0x1000 ; Next page (PDT)
     
     ; PDT entry (first entry points to PT)
-    mov dword [edi], 0x4003 ; Present + Write + User
+    mov dword [edi], 0x9003 + 0x3000 ; Present + Write + User
     add edi, 0x1000         ; Next page (PT)
     
     ; Identity map first 2MB of memory
@@ -287,7 +298,6 @@ gdt64_start:
     dw 0x0000 ; limit (bits 0-15) - ignored in 64-bit mode
     dw 0x0000 ; base (bits 0-15) - ignored in 64-bit mode
     db 0x00 ; base (bits 16-23) - ignored in 64-bit mode
-    db 10010010b ; access byte
     db 10010010b ; access byte: Present, Ring 0, Data Segment, Direction 0, Writable
     db 00000000b ; flags: All 0 for data segments in 64-bit mode
     db 0x00 ; base (bits 24-31) - ignored in 64-bit mode
@@ -295,7 +305,7 @@ gdt64_end:
 
 gdt64_ptr:
     dw gdt64_end - gdt64_start - 1 ; size of GDT
-    dd gdt64_start ; address of GDT
+    dq gdt64_start ; use 64-bit address (quad-word)
 
 ; 64-bit code starts here
 BITS 64
@@ -308,33 +318,21 @@ long_mode_entry:
     mov gs, ax
     mov ss, ax
     
-    ; clear screen using direct video memory access
-    mov rdi, 0xB8000 ; video memory address
-    mov rcx, 2000 ; 80x25 characters on screen (each 2 bytes)
-    mov rax, 0x1F201F201F201F20 ; space character (0x20) with light gray color (0x1F)
-    rep stosq ; fill screen
-    
-    ; display a message on screen
-    mov rdi, 0xB8000
-    mov rax, 0x1F4B1F611F741F4F ; "KatO" with light gray color
-    mov [rdi], rax
-    mov rax, 0x1F201F531F201F53 ; "S  " with light gray color
-    mov [rdi + 8], rax
-    mov rax, 0x1F341F361F2D1F36 ; "64-" with light gray color
-    mov [rdi + 16], rax
-    mov rax, 0x1F741F691F621F62 ; "bit" with light gray color
-    mov [rdi + 24], rax
-    mov rax, 0x1F6F1F4D1F201F20 ; "  Mo" with light gray color
-    mov [rdi + 32], rax
-    mov rax, 0x1F651F641F6F1F64 ; "de!" with light gray color 
-    mov [rdi + 40], rax
-    
-    ; jump to kernel code at 0x10000
-    mov rax, 0x10000 ; address where we loaded the kernel
-    jmp rax
-    
-    ; we should never get here
-    hlt
+    ; IMPORTANT: debugging message to show we made it to 64-bit mode
+    mov rdi, 0xB8000 ; second line in video memory
+    mov rax, 0x4F4C4F474F4E4F4D ; "LONGMOD" in red
+    mov [rdi], rax 
+    mov rax, 0x4F454F204F454F20 ; "E E " in red 
+    mov [rdi + 8], rax 
+
+    ; give the system a moment to display
+    mov rcx, 10000000
+.delay_loop:
+    nop 
+    loop .delay_loop
+
+    ; jump to kernel entry point
+    jmp 0x10000
 
 ; data section
 stage2_msg db "KatOS Bootloader Stage 2", 13, 10, 0
@@ -344,3 +342,4 @@ protected_mode_msg db "Switching to protected mode...", 13, 10, 0
 fail_msg db "Failed to execute! System halted.", 13, 10, 0
 disk_error_msg db "Error loading kernel! Code: ", 0
 a20_error_msg db "Error enabling A20 line!", 13, 10, 0
+kernel_error_msg db "Error: Kernel not found or invalid!", 13, 10, 0
